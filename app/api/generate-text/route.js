@@ -12,31 +12,38 @@ export async function POST(req) {
       );
     }
 
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
       return NextResponse.json(
-        { error: "ANTHROPIC_API_KEY ist nicht gesetzt" },
+        { error: "OPENAI_API_KEY ist nicht gesetzt" },
         { status: 500 }
       );
     }
 
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
+        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: "claude-3-5-sonnet-20240620",
+        model: "gpt-4.1-mini",
+        messages: [
+          {
+            role: "system",
+            content:
+              "Du bist ein Assistent, der didaktisch hochwertige Lesetexte für den Unterricht auf Deutsch erstellt.",
+          },
+          { role: "user", content: prompt },
+        ],
         max_tokens: 2000,
-        messages: [{ role: "user", content: prompt }],
+        temperature: 0.7,
       }),
     });
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error("Anthropic API Fehler:", errorText);
+      console.error("OpenAI API Fehler:", errorText);
       return NextResponse.json(
         { error: "Fehler bei der Textgenerierung" },
         { status: 502 }
@@ -45,10 +52,7 @@ export async function POST(req) {
 
     const data = await response.json();
     const text =
-      data?.content
-        ?.filter((item) => item.type === "text")
-        ?.map((item) => item.text)
-        ?.join("\n") || "";
+      data?.choices?.[0]?.message?.content?.trim() || "";
 
     return NextResponse.json({ text });
   } catch (err) {
@@ -59,5 +63,6 @@ export async function POST(req) {
     );
   }
 }
+
 
 

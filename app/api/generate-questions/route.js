@@ -12,37 +12,40 @@ export async function POST(req) {
       );
     }
 
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
       return NextResponse.json(
-        { error: "ANTHROPIC_API_KEY ist nicht gesetzt" },
+        { error: "OPENAI_API_KEY ist nicht gesetzt" },
         { status: 500 }
       );
     }
 
-    const prompt = `Text: ${text}
+    const prompt = `Hier ist ein Lesetext:\n\n${text}\n\nErstelle 5-7 Verständnisfragen (gemischt: einfach, mittel, anspruchsvoll) für die Klassenstufe "${klassenstufe || "passend zum Text"}" auf dem Niveau "${niveau || "passend zum Text"}". Formatiere die Fragen als nummerierte Liste.`;
 
-Erstelle 5-7 Verständnisfragen (gemischt: einfach, mittel, anspruchsvoll) für ${klassenstufe || "die passende"} Klasse, Niveau ${niveau || "passend zum Text"}.
-
-Formatiere die Fragen als nummerierte Liste.`;
-
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
+    const response = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
+        Authorization: `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: "claude-3-5-sonnet-20240620",
+        model: "gpt-4.1-mini",
+        messages: [
+          {
+            role: "system",
+            content:
+              "Du erstellst pädagogisch sinnvolle Verständnisfragen zu Lesetexten für den Unterricht.",
+          },
+          { role: "user", content: prompt },
+        ],
         max_tokens: 1500,
-        messages: [{ role: "user", content: prompt }],
+        temperature: 0.7,
       }),
     });
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error("Anthropic API Fehler (Fragen):", errorText);
+      console.error("OpenAI API Fehler (Fragen):", errorText);
       return NextResponse.json(
         { error: "Fehler bei der Fragengenerierung" },
         { status: 502 }
@@ -51,10 +54,7 @@ Formatiere die Fragen als nummerierte Liste.`;
 
     const data = await response.json();
     const questions =
-      data?.content
-        ?.filter((item) => item.type === "text")
-        ?.map((item) => item.text)
-        ?.join("\n") || "";
+      data?.choices?.[0]?.message?.content?.trim() || "";
 
     return NextResponse.json({ text: questions });
   } catch (err) {
@@ -65,5 +65,6 @@ Formatiere die Fragen als nummerierte Liste.`;
     );
   }
 }
+
 
 
