@@ -18,7 +18,12 @@ import {
   AlertCircle,
   Check,
   X,
+  User,
+  LogOut,
+  FileSpreadsheet,
 } from "lucide-react";
+import { supabaseClient } from "../lib/supabaseClient";
+import AuthModal from "./AuthModal";
 
 export default function LesetextGenerator() {
   const [formData, setFormData] = useState({
@@ -46,12 +51,16 @@ export default function LesetextGenerator() {
   const [toast, setToast] = useState(null);
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [loadingProgress, setLoadingProgress] = useState("");
-  const [formProgress, setFormProgress] = useState(0);
   const [wordCount, setWordCount] = useState(0);
   const [readingTime, setReadingTime] = useState(0);
   const [favoritesSearch, setFavoritesSearch] = useState("");
   const [deletedFavorite, setDeletedFavorite] = useState(null);
   const [autoGenerateQuestions, setAutoGenerateQuestions] = useState(false);
+  
+  // Auth States
+  const [user, setUser] = useState(null);
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [isLoadingAuth, setIsLoadingAuth] = useState(true);
 
   const klassenstufen = [
     {
@@ -115,7 +124,7 @@ export default function LesetextGenerator() {
     { value: "C1-C2", label: "Sehr lang", words: "500-700 Wörter" },
   ];
 
-  // Initial Load: Onboarding + Favoriten aus Supabase
+  // Initial Load: Auth Check + Onboarding + Favoriten aus Supabase
   useEffect(() => {
     if (typeof window !== "undefined") {
       const hasVisited = window.localStorage.getItem("hasVisited");
@@ -125,29 +134,84 @@ export default function LesetextGenerator() {
       }
     }
 
-    const loadFavoritesFromApi = async () => {
-      try {
-        const res = await fetch("/api/favorites");
-        if (!res.ok) throw new Error("Fehler beim Laden der Favoriten");
-        const data = await res.json();
-        setFavorites(data || []);
-      } catch (e) {
-        showToast(
-          "Favoriten konnten nicht von der Datenbank geladen werden.",
-          "error"
-        );
+    // Auth Check
+    const checkAuth = async () => {
+      if (!supabaseClient) {
+        setIsLoadingAuth(false);
+        return;
       }
+
+      const {
+        data: { user },
+      } = await supabaseClient.auth.getUser();
+      setUser(user);
+      setIsLoadingAuth(false);
+
+      // Session Listener
+      const {
+        data: { subscription },
+      } = supabaseClient.auth.onAuthStateChange((_event, session) => {
+        setUser(session?.user ?? null);
+        if (session?.user) {
+          loadFavoritesFromApi();
+        } else {
+          setFavorites([]);
+        }
+      });
+
+      return () => subscription.unsubscribe();
     };
 
-    loadFavoritesFromApi();
+    checkAuth();
   }, []);
 
+  const getAuthHeaders = async () => {
+    if (!supabaseClient || !user) return {};
+    try {
+      const {
+        data: { session },
+      } = await supabaseClient.auth.getSession();
+      if (session?.access_token) {
+        return {
+          Authorization: `Bearer ${session.access_token}`,
+        };
+      }
+    } catch (e) {
+      console.error("Error getting session:", e);
+    }
+    return {};
+  };
+
+  const loadFavoritesFromApi = async () => {
+    if (!user) {
+      setFavorites([]);
+      return;
+    }
+
+    try {
+      const headers = await getAuthHeaders();
+      const res = await fetch("/api/favorites", {
+        headers: {
+          "Content-Type": "application/json",
+          ...headers,
+        },
+      });
+      if (!res.ok) throw new Error("Fehler beim Laden der Favoriten");
+      const data = await res.json();
+      setFavorites(data || []);
+    } catch (e) {
+      showToast(
+        "Favoriten konnten nicht von der Datenbank geladen werden.",
+        "error"
+      );
+    }
+  };
+
   useEffect(() => {
-    let progress = 0;
-    if (formData.thema) progress += 50;
-    if (formData.klassenstufe) progress += 50;
-    setFormProgress(progress);
-  }, [formData.thema, formData.klassenstufe]);
+    if (user) {
+      loadFavoritesFromApi();
+    }
+  }, [user]);
 
   useEffect(() => {
     if (generatedText) {
@@ -356,6 +420,12 @@ Wichtig:
   };
 
   const saveToFavorites = async () => {
+    if (!user) {
+      setShowAuthModal(true);
+      showToast("Bitte melde dich an, um Favoriten zu speichern.", "info");
+      return;
+    }
+
     if (!generatedText.trim()) {
       showToast("Es gibt keinen Text zum Speichern.", "error");
       return;
@@ -368,9 +438,13 @@ Wichtig:
     };
 
     try {
+      const headers = await getAuthHeaders();
       const res = await fetch("/api/favorites", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...headers,
+        },
         body: JSON.stringify(newFavorite),
       });
       if (!res.ok) throw new Error("Fehler beim Speichern");
@@ -381,6 +455,44 @@ Wichtig:
     } catch (e) {
       showToast("Favorit konnte nicht gespeichert werden.", "error");
     }
+  };
+
+  const handleLogout = async () => {
+    if (!supabaseClient) return;
+    await supabaseClient.auth.signOut();
+    setUser(null);
+    setFavorites([]);
+    showToast("Erfolgreich abgemeldet", "success");
+  };
+
+  const downloadCSV = () => {
+    if (!generatedText) return;
+    const csvContent = `Thema,Klassenstufe,Niveau,Textlänge,Textsorte,Wörter,Lesezeit,Text,Fragen\n"${formData.thema}","${formData.klassenstufe}","${formData.niveau}","${formData.laenge}","${formData.textsorte}","${wordCount}","${readingTime} Min","${generatedText.replace(/"/g, '""')}","${(generatedQuestions || "").replace(/"/g, '""')}"`;
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `lesetext-${formData.thema.toLowerCase().replace(/\s+/g, "-")}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast("Als CSV heruntergeladen", "success");
+  };
+
+  const downloadMarkdown = () => {
+    if (!generatedText) return;
+    const markdown = `# ${formData.thema}\n\n**Klasse:** ${formData.klassenstufe} | **Niveau:** ${formData.niveau} | **Textsorte:** ${textsorten.find((t) => t.value === formData.textsorte)?.label}\n\n## Lesetext\n\n${generatedText}\n\n${generatedQuestions ? `## Verständnisfragen\n\n${generatedQuestions}` : ""}\n\n---\n*Erstellt mit LeseTextr – ${new Date().toLocaleDateString("de-CH")}*`;
+    const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `lesetext-${formData.thema.toLowerCase().replace(/\s+/g, "-")}.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showToast("Als Markdown heruntergeladen", "success");
   };
 
   const loadFavorite = (fav) => {
@@ -405,8 +517,13 @@ Wichtig:
     setDeletedFavorite(toDelete);
 
     try {
+      const headers = await getAuthHeaders();
       const res = await fetch(`/api/favorites?id=${id}`, {
         method: "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+          ...headers,
+        },
       });
       if (!res.ok) throw new Error("Fehler beim Löschen");
       showToast("Favorit gelöscht", "info");
@@ -418,9 +535,13 @@ Wichtig:
   const undoDeleteFavorite = async () => {
     if (!deletedFavorite) return;
     try {
+      const headers = await getAuthHeaders();
       const res = await fetch("/api/favorites", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...headers,
+        },
         body: JSON.stringify(deletedFavorite),
       });
       if (!res.ok) throw new Error("Fehler bei Wiederherstellung");
@@ -599,6 +720,79 @@ Wichtig:
             >
               LeseTextr
             </h1>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: "0.75rem" }}>
+            {user ? (
+              <>
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "0.5rem",
+                    padding: "0.5rem 1rem",
+                    background: "#F0FDFA",
+                    borderRadius: "12px",
+                    border: "1px solid #C9E4DE",
+                  }}
+                >
+                  <User size={16} color="#14B8A6" />
+                  <span
+                    style={{
+                      fontFamily: "'Inter', sans-serif",
+                      fontSize: "0.9rem",
+                      color: "#0F766E",
+                      fontWeight: "500",
+                    }}
+                  >
+                    {user.email}
+                  </span>
+                </div>
+                <button
+                  onClick={handleLogout}
+                  className="button-hover"
+                  style={{
+                    padding: "0.75rem 1.25rem",
+                    fontFamily: "'Inter', sans-serif",
+                    fontSize: "0.9rem",
+                    fontWeight: "600",
+                    background: "white",
+                    color: "#64748B",
+                    border: "2px solid #E0E7FF",
+                    borderRadius: "12px",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "0.5rem",
+                  }}
+                >
+                  <LogOut size={16} />
+                  Abmelden
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={() => setShowAuthModal(true)}
+                className="button-hover"
+                style={{
+                  padding: "0.75rem 1.25rem",
+                  fontFamily: "'Inter', sans-serif",
+                  fontSize: "0.9rem",
+                  fontWeight: "600",
+                  background: "linear-gradient(135deg, #FF6B9D 0%, #FF8BA7 100%)",
+                  color: "white",
+                  border: "none",
+                  borderRadius: "12px",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "0.5rem",
+                  boxShadow: "0 4px 12px rgba(255, 107, 157, 0.3)",
+                }}
+              >
+                <User size={16} />
+                Anmelden
+              </button>
+            )}
           </div>
         </header>
 
@@ -828,71 +1022,6 @@ Wichtig:
 
         {/* Generator Anchor */}
         <div id="generator" style={{ scrollMarginTop: "2rem" }}></div>
-
-        {/* Progress Bar */}
-        {formProgress > 0 && formProgress < 100 && (
-          <div
-            style={{
-              background: "white",
-              padding: "1rem 1.5rem",
-              borderRadius: "12px",
-              marginBottom: "1.5rem",
-              border: "2px solid #E0E7FF",
-              display: "flex",
-              alignItems: "center",
-              gap: "1rem",
-            }}
-          >
-            <div style={{ flex: 1 }}>
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  marginBottom: "0.5rem",
-                }}
-              >
-                <span
-                  style={{
-                    fontFamily: "'Inter', sans-serif",
-                    fontSize: "0.9rem",
-                    fontWeight: "600",
-                    color: "#64748B",
-                  }}
-                >
-                  Fortschritt
-                </span>
-                <span
-                  style={{
-                    fontFamily: "'Inter', sans-serif",
-                    fontSize: "0.9rem",
-                    fontWeight: "600",
-                    color: "#FF6B9D",
-                  }}
-                >
-                  {formProgress}%
-                </span>
-              </div>
-              <div
-                style={{
-                  height: "8px",
-                  background: "#F1F5F9",
-                  borderRadius: "4px",
-                  overflow: "hidden",
-                }}
-              >
-                <div
-                  style={{
-                    height: "100%",
-                    background:
-                      "linear-gradient(90deg, #FF6B9D 0%, #FF8BA7 100%)",
-                    width: `${formProgress}%`,
-                    transition: "width 0.3s ease",
-                  }}
-                ></div>
-              </div>
-            </div>
-          </div>
-        )}
 
         {/* Generator Form */}
         <div
@@ -1385,52 +1514,58 @@ Wichtig:
                 <div
                   style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}
                 >
-                  <button
-                    onClick={saveToFavorites}
-                    className="button-hover"
-                    style={{
-                      padding: "0.75rem 1.25rem",
-                      fontFamily: "'Inter', sans-serif",
-                      fontSize: "0.9rem",
-                      fontWeight: "600",
-                      background: isSaved ? "#D1FAE5" : "white",
-                      color: isSaved ? "#059669" : "#FF6B9D",
-                      border: `2px solid ${
-                        isSaved ? "#A7F3D0" : "#FFC9D9"
-                      }`,
-                      borderRadius: "12px",
-                      cursor: "pointer",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "0.5rem",
-                    }}
-                  >
-                    <Heart size={16} fill={isSaved ? "#059669" : "none"} />
-                    {isSaved ? "Gespeichert" : "Speichern"}
-                  </button>
+                  {/* Speichern & Favoriten nur für eingeloggte Nutzer */}
+                  {user && (
+                    <>
+                      <button
+                        onClick={saveToFavorites}
+                        className="button-hover"
+                        style={{
+                          padding: "0.75rem 1.25rem",
+                          fontFamily: "'Inter', sans-serif",
+                          fontSize: "0.9rem",
+                          fontWeight: "600",
+                          background: isSaved ? "#D1FAE5" : "white",
+                          color: isSaved ? "#059669" : "#FF6B9D",
+                          border: `2px solid ${
+                            isSaved ? "#A7F3D0" : "#FFC9D9"
+                          }`,
+                          borderRadius: "12px",
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "0.5rem",
+                        }}
+                      >
+                        <Heart size={16} fill={isSaved ? "#059669" : "none"} />
+                        {isSaved ? "Gespeichert" : "Speichern"}
+                      </button>
 
-                  <button
-                    onClick={() => setShowFavorites(true)}
-                    className="button-hover"
-                    style={{
-                      padding: "0.75rem 1.25rem",
-                      fontFamily: "'Inter', sans-serif",
-                      fontSize: "0.9rem",
-                      fontWeight: "600",
-                      background: "white",
-                      color: "#FF6B9D",
-                      border: "2px solid #FFC9D9",
-                      borderRadius: "12px",
-                      cursor: "pointer",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: "0.5rem",
-                    }}
-                  >
-                    <Heart size={16} />
-                    Favoriten ({favorites.length})
-                  </button>
+                      <button
+                        onClick={() => setShowFavorites(true)}
+                        className="button-hover"
+                        style={{
+                          padding: "0.75rem 1.25rem",
+                          fontFamily: "'Inter', sans-serif",
+                          fontSize: "0.9rem",
+                          fontWeight: "600",
+                          background: "white",
+                          color: "#FF6B9D",
+                          border: "2px solid #FFC9D9",
+                          borderRadius: "12px",
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "0.5rem",
+                        }}
+                      >
+                        <Heart size={16} />
+                        Favoriten ({favorites.length})
+                      </button>
+                    </>
+                  )}
 
+                  {/* Basis-Export für alle */}
                   <button
                     onClick={copyToClipboard}
                     className="button-hover"
@@ -1498,6 +1633,55 @@ Wichtig:
                     <Download size={16} />
                     TXT
                   </button>
+
+                  {/* Zusätzliche Export-Möglichkeiten nur für eingeloggte Nutzer */}
+                  {user && (
+                    <>
+                      <button
+                        onClick={downloadCSV}
+                        className="button-hover"
+                        style={{
+                          padding: "0.75rem 1.25rem",
+                          fontFamily: "'Inter', sans-serif",
+                          fontSize: "0.9rem",
+                          fontWeight: "600",
+                          background: "white",
+                          color: "#14B8A6",
+                          border: "2px solid #C9E4DE",
+                          borderRadius: "12px",
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "0.5rem",
+                        }}
+                      >
+                        <FileSpreadsheet size={16} />
+                        CSV
+                      </button>
+
+                      <button
+                        onClick={downloadMarkdown}
+                        className="button-hover"
+                        style={{
+                          padding: "0.75rem 1.25rem",
+                          fontFamily: "'Inter', sans-serif",
+                          fontSize: "0.9rem",
+                          fontWeight: "600",
+                          background: "white",
+                          color: "#7C3AED",
+                          border: "2px solid #DDD6FE",
+                          borderRadius: "12px",
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: "0.5rem",
+                        }}
+                      >
+                        <FileText size={16} />
+                        Markdown
+                      </button>
+                    </>
+                  )}
                 </div>
               )}
             </div>
@@ -2278,6 +2462,21 @@ Wichtig:
           </div>
         </footer>
       </div>
+
+      {/* Auth Modal */}
+      <AuthModal
+        isOpen={showAuthModal}
+        onClose={() => setShowAuthModal(false)}
+        onAuthSuccess={(data) => {
+          if (data?.user) {
+            setUser(data.user);
+            setShowAuthModal(false);
+            showToast("Erfolgreich angemeldet!", "success");
+          } else if (data?.toast) {
+            showToast(data.toast.message, data.toast.type);
+          }
+        }}
+      />
     </div>
   );
 }

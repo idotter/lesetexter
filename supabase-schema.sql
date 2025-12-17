@@ -1,7 +1,8 @@
--- Supabase Tabelle für Favoriten
+-- Supabase Tabelle für Favoriten mit User-Authentifizierung
 
 create table if not exists public.favorites (
   id bigint generated always as identity primary key,
+  user_id uuid not null references auth.users(id) on delete cascade,
   thema text not null,
   klassenstufe text not null,
   niveau text not null,
@@ -13,24 +14,36 @@ create table if not exists public.favorites (
   savedAt timestamptz not null default now()
 );
 
+-- Index für bessere Performance bei User-Abfragen
+create index if not exists favorites_user_id_idx on public.favorites(user_id);
+
 alter table public.favorites enable row level security;
 
--- Einfache Policy: alle dürfen lesen/schreiben (für ersten Prototypen).
--- Für Produktion solltest du das mit Auth absichern.
+-- Policies: Nutzer können nur ihre eigenen Favoriten sehen/bearbeiten/löschen
 
+drop policy if exists "Favoriten lesen" on public.favorites;
 create policy "Favoriten lesen"
   on public.favorites
   for select
-  using ( true );
+  using ( auth.uid() = user_id );
 
+drop policy if exists "Favoriten schreiben" on public.favorites;
 create policy "Favoriten schreiben"
   on public.favorites
   for insert
-  with check ( true );
+  with check ( auth.uid() = user_id );
 
+drop policy if exists "Favoriten aktualisieren" on public.favorites;
+create policy "Favoriten aktualisieren"
+  on public.favorites
+  for update
+  using ( auth.uid() = user_id )
+  with check ( auth.uid() = user_id );
+
+drop policy if exists "Favoriten löschen" on public.favorites;
 create policy "Favoriten löschen"
   on public.favorites
   for delete
-  using ( true );
+  using ( auth.uid() = user_id );
 
 

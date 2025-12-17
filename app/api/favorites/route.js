@@ -1,14 +1,36 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "../../../lib/supabaseAdmin";
+import { supabaseClient } from "../../../lib/supabaseClient";
 
-export async function GET() {
+export async function GET(req) {
   if (!supabaseAdmin) {
+    return NextResponse.json([], { status: 200 });
+  }
+
+  // User-ID aus Authorization Header extrahieren
+  const authHeader = req.headers.get("authorization");
+  let userId = null;
+
+  if (authHeader && supabaseClient) {
+    try {
+      const token = authHeader.replace("Bearer ", "");
+      const {
+        data: { user },
+      } = await supabaseClient.auth.getUser(token);
+      userId = user?.id;
+    } catch (e) {
+      console.error("Auth error:", e);
+    }
+  }
+
+  if (!userId) {
     return NextResponse.json([], { status: 200 });
   }
 
   const { data, error } = await supabaseAdmin
     .from("favorites")
     .select("*")
+    .eq("user_id", userId)
     .order("savedAt", { ascending: false });
 
   if (error) {
@@ -27,6 +49,29 @@ export async function POST(req) {
     );
   }
 
+  // User-ID aus Authorization Header extrahieren
+  const authHeader = req.headers.get("authorization");
+  let userId = null;
+
+  if (authHeader && supabaseClient) {
+    try {
+      const token = authHeader.replace("Bearer ", "");
+      const {
+        data: { user },
+      } = await supabaseClient.auth.getUser(token);
+      userId = user?.id;
+    } catch (e) {
+      console.error("Auth error:", e);
+    }
+  }
+
+  if (!userId) {
+    return NextResponse.json(
+      { error: "Nicht angemeldet" },
+      { status: 401 }
+    );
+  }
+
   const body = await req.json();
   const {
     id,
@@ -41,6 +86,7 @@ export async function POST(req) {
   } = body || {};
 
   const payload = {
+    user_id: userId,
     thema,
     klassenstufe,
     niveau,
@@ -82,6 +128,29 @@ export async function DELETE(req) {
     );
   }
 
+  // User-ID aus Authorization Header extrahieren
+  const authHeader = req.headers.get("authorization");
+  let userId = null;
+
+  if (authHeader && supabaseClient) {
+    try {
+      const token = authHeader.replace("Bearer ", "");
+      const {
+        data: { user },
+      } = await supabaseClient.auth.getUser(token);
+      userId = user?.id;
+    } catch (e) {
+      console.error("Auth error:", e);
+    }
+  }
+
+  if (!userId) {
+    return NextResponse.json(
+      { error: "Nicht angemeldet" },
+      { status: 401 }
+    );
+  }
+
   const { searchParams } = new URL(req.url);
   const id = searchParams.get("id");
 
@@ -95,7 +164,8 @@ export async function DELETE(req) {
   const { error } = await supabaseAdmin
     .from("favorites")
     .delete()
-    .eq("id", id);
+    .eq("id", id)
+    .eq("user_id", userId);
 
   if (error) {
     console.error("Supabase DELETE favorites error:", error);
